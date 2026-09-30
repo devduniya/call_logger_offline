@@ -1,0 +1,83 @@
+import 'package:flutter/material.dart';
+import 'package:logger/l10n/app_localizations.dart';
+import 'package:logger/components/common/divider.dart';
+import 'package:logger/components/common/sized_text.dart';
+
+class CallDurationTile extends StatelessWidget {
+  final double spacing;
+  final List<String> labels;
+  final List<String> values;
+  final List<Icon> icons;
+
+  const CallDurationTile({
+    super.key,
+    required this.labels,
+    required this.values,
+    required this.icons,
+    this.spacing = 20.0,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedText(
+          AppLocalizations.of(context).callDurationText,
+          size: 20,
+        ),
+        SizedBox(
+          height: spacing - 5,
+        ),
+        Container(
+          padding: const EdgeInsets.all(10.0),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.surface,
+            borderRadius: BorderRadius.circular(10.0),
+          ),
+          child: Column(
+            children: labels.map((String label) {
+              final int idx = labels.indexOf(label);
+
+              return Column(
+                children: [
+                  if (idx != 0) const LogDivider(),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      vertical: 10.0,
+                      horizontal: 5.0,
+                    ),
+                    child: Row(
+                      children: [
+                        icons[idx],
+                        SizedBox(
+                          width: 10.0,
+                        ),
+                        Text(
+                          label,
+                          style: const TextStyle(
+                            fontSize: 16.0,
+                          ),
+                        ),
+                        Spacer(),
+                        Text(
+                          values[idx],
+                          style: const TextStyle(
+                            fontSize: 16.0,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              );
+            }).toList(),
+          ),
+        ),
+        SizedBox(
+          height: spacing,
+        ),
+      ],
+    );
+  }
+}

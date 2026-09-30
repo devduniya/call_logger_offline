@@ -1,0 +1,468 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:logger/components/common/divider.dart';
+import 'package:logger/providers/call_logs_provider.dart';
+import 'package:logger/providers/linear_loader_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/call_log_count_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/call_rounding_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/download_confirmation_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/duration_filtering_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/export_file_name_format_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/export_type_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/grouped_calls_type_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/logs_sharing_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/phone_account_filtering_provider.dart';
+import 'package:logger/providers/shared_preferences_providers/total_call_duration_provider.dart';
+import 'package:logger/l10n/app_localizations.dart';
+import 'package:logger/providers/shared_preferences_providers/use_grouping_with_filters.dart';
+import 'package:logger/screens/about/screen.dart';
+import 'package:logger/screens/settings/filter_presets_activity.dart';
+import 'package:logger/screens/settings/fragments/export_filename_dialog.dart';
+import 'package:logger/screens/settings/fragments/export_format_dialog.dart';
+import 'package:logger/screens/settings/fragments/group_calls_dialog.dart';
+import 'package:logger/utils/csv_to_map.dart';
+import 'package:logger/utils/native_methods.dart';
+import 'package:logger/utils/snackbar.dart';
+import 'package:saf/saf.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+
+class SettingsScreen extends ConsumerStatefulWidget {
+  const SettingsScreen({super.key});
+
+  @override
+  ConsumerState<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends ConsumerState<SettingsScreen> {
+  bool isDoneImporting = false;
+
+  void handleCallLogImport() async {
+    var linearProgressLoader = ref.read(linearLoaderProvider.notifier);
+
+    await WakelockPlus.enable().catchError((_) {});
+
+    try {
+      final document = await Saf().pickFile(
+        mimeTypes: ['text/comma-separated-values', 'text/csv'],
+      );
+      if (document != null) {
+        final fileContents = await Saf().readFileBytes(document.uri);
+        if (mounted) {
+          linearProgressLoader.showLoading(
+            AppLocalizations.of(context).processingFileText,
+          );
+        }
+
+        var callLogs = await CsvToMapConverter.generateCsvMap(fileContents);
+
+        if (mounted) {
+          linearProgressLoader.showLoading(
+            AppLocalizations.of(context).insertingLogsText,
+          );
+        }
+
+        Future.delayed(const Duration(seconds: 12), () {
+          if (!isDoneImporting && mounted) {
+            linearProgressLoader.showLoading(
+              AppLocalizations.of(context).takingMoreTimeText,
+            );
+          }
+        });
+
+        Future.delayed(const Duration(seconds: 20), () {
+          if (!isDoneImporting && mounted) {
+            linearProgressLoader.showLoading(
+              AppLocalizations.of(context).pleaseWaitText,
+            );
+          }
+        });
+
+        var x = await CallLogWriter.batchInsertCallLogs(callLogs);
+
+        // Refresh call logs in background automatically
+        await ref.read(callLogsNotifierProvider.notifier).hardRefresh();
+
+        if (mounted) {
+          if (x) {
+            AppSnackBar.show(
+              context,
+              content: AppLocalizations.of(context).importSuccessMessageText,
+            );
+          } else {
+            AppSnackBar.show(
+              context,
+              content: AppLocalizations.of(context).baseGhostErrorMessage,
+            );
+          }
+          isDoneImporting = true;
+          linearProgressLoader.hideLoading();
+        }
+      }
+    } catch (e) {
+      debugPrint(e.toString());
+
+      isDoneImporting = true;
+      linearProgressLoader.hideLoading();
+      if (mounted) {
+        AppSnackBar.show(
+          context,
+          content: AppLocalizations.of(context).baseGhostErrorMessage,
+        );
+      }
+    } finally {
+      await WakelockPlus.disable().catchError((_) {});
+    }
+  }
+
+  void confirmImport() {
+    showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: Text(
+              AppLocalizations.of(context).startImportText,
+            ),
+            content: SingleChildScrollView(
+              child: Text(
+                AppLocalizations.of(context).confirmImportText,
+              ),
+            ),
+            actions: [
+              OutlinedButton(
+                onPressed: () {
+                  Navigator.pop(context);
+                },
+                child: Text(
+                  AppLocalizations.of(context).cancelText,
+                ),
+              ),
+              ElevatedButton(
+                onPressed: () {
+                  if (mounted) {
+                    Navigator.pop(context);
+                  }
+                  handleCallLogImport();
+                },
+                child: Text(
+                  AppLocalizations.of(context).continueText,
+                ),
+              ),
+            ],
+          );
+        });
+  }
+
+  @override
+  void dispose() {
+    WakelockPlus.disable().catchError((_) {});
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final List<Widget> advancedSettingsListItems = <Widget>[
+      SwitchListTile(
+        secondary: Icon(Icons.av_timer),
+        subtitle: Text(AppLocalizations.of(context).roundDurationTextSubtitle),
+        enableFeedback: true,
+        title: Text(
+          AppLocalizations.of(context).roundDurationText,
+        ),
+        value: ref.watch(callRoundingProvider),
+        onChanged: (_) => ref.read(callRoundingProvider.notifier).toggle(),
+      ),
+      ListTile(
+        subtitle: Text(AppLocalizations.of(context).groupedCallSettingSubtitle),
+        onTap: () {
+          showModalBottomSheet(
+            useSafeArea: true,
+            showDragHandle: true,
+            isScrollControlled: true,
+            context: context,
+            builder: (_) {
+              return GroupCallsDialog(
+                groupBy: ref.read(groupedCallsTypeProvider),
+                isFilterGroupingEnabled: ref.read(filterGroupingProvider),
+              );
+            },
+          );
+        },
+        title: Text(
+          AppLocalizations.of(context).callGroupingText,
+        ),
+        leading: Icon(Icons.view_list),
+      ),
+      ListTile(
+        subtitle:
+            Text(AppLocalizations.of(context).filterPresetsSettingSubtitle),
+        onTap: () {
+          Navigator.push(context,
+              MaterialPageRoute(builder: (context) => FilterPresetsActivity()));
+        },
+        title: Text(
+          AppLocalizations.of(context).filterPresetTitle,
+        ),
+        leading: Icon(Icons.filter_list),
+      ),
+      ListTile(
+        subtitle:
+            Text(AppLocalizations.of(context).exportFilenameSettingSubtitle),
+        onTap: () {
+          showModalBottomSheet(
+            useSafeArea: true,
+            showDragHandle: true,
+            isScrollControlled: true,
+            context: context,
+            builder: (_) {
+              return ExportFilenameDialog(
+                exportFileNameFormat: ref.read(exportFileNameFormatProvider),
+              );
+            },
+          );
+        },
+        title: Text(AppLocalizations.of(context).exportFileNameFormatLabelText),
+        leading: Icon(Icons.drive_file_rename_outline),
+      ),
+      ListTile(
+        subtitle:
+            Text(AppLocalizations.of(context).exportFormatSettingSubtitle),
+        onTap: () {
+          showModalBottomSheet(
+            useSafeArea: true,
+            showDragHandle: true,
+            isScrollControlled: true,
+            context: context,
+            builder: (_) {
+              return ExportFormatDialog(
+                fileType: ref.read(exportTypeProvider),
+              );
+            },
+          );
+        },
+        title: Text(AppLocalizations.of(context).callLogsExportFormatLabelText),
+        leading: Icon(Icons.insert_drive_file),
+      ),
+      ListTile(
+        subtitle:
+            Text(AppLocalizations.of(context).importCallLogsSettingSubtitle),
+        onTap: confirmImport,
+        title: Text(AppLocalizations.of(context).importCallLogsText),
+        leading: Icon(Icons.file_upload),
+      ),
+    ];
+
+    return SafeArea(
+      child: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(20.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                AppLocalizations.of(context).aboutText,
+                style: const TextStyle(fontSize: 20.0),
+              ),
+              const SizedBox(
+                height: 15.0,
+              ),
+              Container(
+                clipBehavior: Clip.hardEdge,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                child: Material(
+                  child: ListView(
+                    shrinkWrap: true,
+                    physics: NeverScrollableScrollPhysics(),
+                    children: [
+                      ListTile(
+                        leading: Icon(Icons.perm_device_information),
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => AboutActivityScreen(),
+                            ),
+                          );
+                        },
+                        title: Text(
+                          AppLocalizations.of(context).appDetailsText,
+                        ),
+                        subtitle: Text(
+                          AppLocalizations.of(context).appDetailsSubText,
+                        ),
+                      )
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(
+                height: 15.0,
+              ),
+              Text(
+                AppLocalizations.of(context).baseSettingsLabelText,
+                style: const TextStyle(fontSize: 20.0),
+              ),
+              const SizedBox(
+                height: 15.0,
+              ),
+              Container(
+                clipBehavior: Clip.hardEdge,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                child: Material(
+                  child: ListView(
+                    shrinkWrap: true,
+                    physics: NeverScrollableScrollPhysics(),
+                    children: [
+                      SwitchListTile(
+                        secondary: Icon(Icons.do_not_disturb_on),
+                        enableFeedback: true,
+                        value: ref.watch(logsSharingProvider),
+                        onChanged: (_) =>
+                            ref.read(logsSharingProvider.notifier).toggle(),
+                        title: Text(
+                          AppLocalizations.of(context).disableLogsSharingText,
+                        ),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .disableLogsSharingSubText),
+                      ),
+                      const LogDivider(),
+                      SwitchListTile(
+                        enableFeedback: true,
+                        secondary: Icon(Icons.download_done),
+                        title: Text(
+                          AppLocalizations.of(context)
+                              .enableDownloadConfirmationText,
+                        ),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .enableDownloadConfirmationSubText),
+                        value: ref.watch(downloadConfirmationProvider),
+                        onChanged: (bool newState) => ref
+                            .read(downloadConfirmationProvider.notifier)
+                            .toggle(),
+                      ),
+                      const LogDivider(),
+                      SwitchListTile(
+                        secondary: Icon(Icons.format_list_numbered),
+                        title: Text(
+                          AppLocalizations.of(context)
+                              .enableCallLogCountVisibilityText,
+                        ),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .enableCallLogCountVisibilitySubText),
+                        enableFeedback: true,
+                        value: ref.watch(callLogCountProvider),
+                        onChanged: (_) =>
+                            ref.read(callLogCountProvider.notifier).toggle(),
+                      ),
+                      const LogDivider(),
+                      SwitchListTile(
+                        secondary: Icon(Icons.timer),
+                        title: Text(
+                          AppLocalizations.of(context)
+                              .enableCallDurationFilteringText,
+                        ),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .enableCallDurationFilteringSubText),
+                        enableFeedback: true,
+                        value: ref.watch(durationFilteringProvider),
+                        onChanged: (_) => ref
+                            .read(durationFilteringProvider.notifier)
+                            .toggle(),
+                      ),
+                      const LogDivider(),
+                      SwitchListTile(
+                        secondary: Icon(Icons.sim_card),
+                        title: Text(AppLocalizations.of(context)
+                            .enableFilterByAccountIdText),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .enableFilterByAccountIdSubText),
+                        enableFeedback: true,
+                        value: ref.watch(phoneAccountFilteringProvider),
+                        onChanged: (_) => ref
+                            .read(phoneAccountFilteringProvider.notifier)
+                            .toggle(),
+                      ),
+                      const LogDivider(),
+                      SwitchListTile(
+                        secondary: Icon(Icons.access_time),
+                        title: Text(AppLocalizations.of(context)
+                            .showTotalCallDurationText),
+                        subtitle: Text(AppLocalizations.of(context)
+                            .showTotalCallDurationSubText),
+                        enableFeedback: true,
+                        value: ref.watch(totalCallDurationProvider),
+                        onChanged: (_) => ref
+                            .read(totalCallDurationProvider.notifier)
+                            .toggle(),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(
+                height: 20.0,
+              ),
+              Text(
+                AppLocalizations.of(context).advancedSettingsLabelText,
+                style: const TextStyle(fontSize: 20.0),
+              ),
+              const SizedBox(height: 15.0),
+              Container(
+                clipBehavior: Clip.hardEdge,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).brightness == Brightness.dark
+                      ? const Color.fromARGB(249, 34, 34, 34)
+                      : const Color.fromARGB(255, 249, 245, 255),
+                  borderRadius: BorderRadius.circular(10.0),
+                ),
+                child: Material(
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    physics: NeverScrollableScrollPhysics(),
+                    itemCount: advancedSettingsListItems.length,
+                    itemBuilder: (context, index) {
+                      return advancedSettingsListItems[index];
+                    },
+                    separatorBuilder: (context, index) {
+                      return const LogDivider();
+                    },
+                  ),
+                ),
+              ),
+              const SizedBox(
+                height: 15.0,
+              ),
+              Container(
+                  clipBehavior: Clip.hardEdge,
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surface,
+                    border: Border.all(
+                      width: 1,
+                      color: Theme.of(context).brightness == Brightness.dark
+                          ? const Color.fromARGB(115, 53, 52, 52)
+                          : const Color.fromARGB(255, 249, 245, 255),
+                    ),
+                    borderRadius: BorderRadius.circular(10.0),
+                  ),
+                  child: ListTile(
+                    leading: Icon(
+                      Icons.warning,
+                      size: 20,
+                      color: Colors.orange,
+                    ),
+                    title: Text(
+                      AppLocalizations.of(context).supportedFormatInformation,
+                      style: TextStyle(fontSize: 15.0),
+                    ),
+                  )),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
